@@ -1,0 +1,730 @@
+---
+title: "Covid19_Report"
+author: "Devadath C Prabhu"
+date: "22/11/2020"
+output:
+  pdf_document: default
+  html_document:
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+# 1 Introduction
+
+This is an analysis report of the [Novel Coronavirus](https://www.who.int/emergencies/diseases/novel-coronavirus-2019) (COVID-19) around the world, to demonstrate data processing and visualization and insights. The report is carried out as a mini-project as part of the course *'Introduction to AI and Data Science (DSC513)'* of first semester MTech at [IIIT Kottayam](https://www.iiitkottayam.ac.in/).  
+
+## 1.1 R, R Markdown and RStudio
+ 
+  R is a programming language and free software environment for statistical computing and graphics supported by the R Foundation for Statistical Computing. The R language is widely used among statisticians and data miners for developing statistical software and data analysis.  
+ 
+  [R Markdown](https://rmarkdown.rstudio.com/) is a file format for making dynamic documents with R. An R Markdown document is written in markdown and contains chunks of embedded R code.  
+ 
+  [RStudio](https://rstudio.com/) is an integrated development environment (IDE) for R. It includes a console, syntax-highlighting editor that supports direct code execution, as well as tools for plotting, history, debugging and workspace management. RStudio is available in open source and commercial editions and runs on the desktop (Windows, Mac, and Linux).  
+ 
+  This report is generated using R Markdown and [open source edition of RStudio](https://rstudio.com/products/rstudio/download/) in Mac.
+
+## 1.2 Packages
+
+The packages used for this analysis are mostly learnt as part of the course and are available in R. The core *tidyverse* includes the packages that are likely to be used in everyday data analysis. Out of the many available packages in it, *dplyr*, *tidyr* and *ggplot2* are used in this analysis. Package *lubridate* is used for date operations, *leaflet* for maps, *kableExtra* for displaying data in tables and *formatR* for formatting purposes.  
+
+```{r, message=FALSE}
+library(tidyverse)
+library(lubridate)
+library(leaflet)
+library(kableExtra)
+library(formatR)
+library(gridExtra)
+```
+
+```{r, include=FALSE}
+library(knitr)
+opts_chunk$set(tidy.opts=list(width.cutoff=52),tidy=TRUE)
+```
+
+\pagebreak
+
+# 2 Data
+
+The data used for analysis is pulled from the [COVID-19 repository](https://github.com/CSSEGISandData/COVID-19) of CSSEGISandData maintained by Johns Hopkins Whiting School of Engineering in GitHub.  
+ 
+  Note: *All the analysis in this report are carried out on the data available during the date of generation of the report which is Nov 22, 2020.*
+
+## 2.1 Data Loading
+
+Three CSV files *time_series_covid19_confirmed_global.csv*, *time_series_covid19_deaths_global.csv* and *time_series_covid19_recovered_global.csv* contain confirmed, deaths and recovered coronavirus data respectively. These files are downloaded and loaded into the workspace.
+
+```{r, message=FALSE}
+## three CSV files
+filenames <- c('time_series_covid19_confirmed_global.csv',
+               'time_series_covid19_deaths_global.csv',
+               'time_series_covid19_recovered_global.csv')
+
+## URL
+url.path <- paste0('https://raw.githubusercontent.com/CSSEGISandData/COVID-19/',
+'master/csse_covid_19_data/csse_covid_19_time_series/')
+
+## download files to local
+download <- function(filename) {
+url <- file.path(url.path, filename)
+dest <- file.path('./', filename)
+download.file(url, dest)
+}
+bin <- lapply(filenames, download)
+
+## load data
+raw.data.confirmed <- read.csv('time_series_covid19_confirmed_global.csv')
+raw.data.deaths <- read.csv('time_series_covid19_deaths_global.csv')
+raw.data.recovered <- read.csv('time_series_covid19_recovered_global.csv')
+```
+   
+Lets have a peek at the raw data without any cleansing. *Table 1* shows the first four entries of confirmed raw data. *Table 2* shows the last four entries of deaths raw data. *Table 3* shows sample data that consists of province state as well. All the tables are restricted to first few columns for display purpose.  
+
+```{r, message=FALSE}
+## displaying the sample confirmed raw data
+raw.data.confirmed[1:4, 1:8] %>% kable(format='pipe', align='c', caption='Raw Data Confirmed (8 columns, 4 rows)', row.names=FALSE)
+
+## displaying the sample deaths raw data
+tail_raw_deaths <- tail(raw.data.deaths, 4)
+tail_raw_deaths[1:4, 1:8] %>% kable(format='pipe', align='c', caption='Raw Data Deaths (8 columns, 4 rows)', row.names=FALSE)
+
+## displaying the sample recovered raw data
+raw.data.recovered[9:12, 1:7] %>% kable(format='pipe', align='c', caption='Raw Data Recovered (7 columns, 4 rows)', row.names=FALSE)
+```
+
+
+## 2.2 Data Cleaning
+
+The three datasets are now cleaned. Unimportant fields are removed, few fields are renamed, then the dataset is converted from wide to long, date format is made readable and the data is grouped by country. Finally, these three datasets are merged into a single dataset.
+
+```{r, message=FALSE}
+## method to clean the data
+cleanData <- function(data){
+  data <- data %>% select(-c(Province.State, Lat, Long)) %>% rename(country=Country.Region)
+  data <- data %>% gather(key=date, value=count, -country)
+  data <- data %>% mutate(date=date %>% substr(2, 9) %>%  mdy())
+  data <- data %>% group_by(country, date) %>%  summarise(count=sum(count, na.rm = T))
+  data <- data %>% as.data.frame()
+  return(data)
+}
+
+## cleaning the datasets and renaming the count column
+data.confirmed <- raw.data.confirmed %>% cleanData() %>%  rename(confirmed=count)
+data.deaths <- raw.data.deaths %>% cleanData() %>% rename(deaths=count)
+data.recovered <- raw.data.recovered %>% cleanData() %>% rename(recovered=count)
+
+## merging the datasets
+data<-data.confirmed %>% merge(data.deaths,all=T) %>% merge(data.recovered,all=T)
+
+## displaying the first five entries after cleaning
+head(data, 5) %>% kable(format='pipe', align='c', caption='Sample Cleaned Data', row.names=FALSE)
+```
+
+\pagebreak
+
+# 3 At A Glance
+
+With the cleaned data we have, lets have sneak peek at it in this section.
+
+## 3.1 Initial Data
+
+We all know that the first case of coronavirus appeared in China way back in Dec 2019. Let us have a look at the initial data and the countries that are affected.
+
+```{r, include=FALSE}
+opts_chunk$set(tidy.opts=list(width.cutoff=56),tidy=TRUE)
+```
+
+```{r, message=FALSE, warning=FALSE}
+## filter dates with zero cases
+non_zero_confirmed_data <- data %>% filter(confirmed!=0)
+
+## filter to get data of first available date
+non_zero_first_confirmed_data <- non_zero_confirmed_data %>% filter(non_zero_confirmed_data$date==min(non_zero_confirmed_data$date))
+
+## print
+non_zero_first_confirmed_data %>% kable(format='pipe', align='c', row.names=c(1:nrow(non_zero_first_confirmed_data)), caption='Data of First Date Available in Dataset')
+```
+
+We see from the above *Table 5* that the first available data is for Jan 22, 2020 and already 6 countries are affected from the virus by this time. Notice that there are already 17 deaths with 28 recoveries in China.  
+ 
+ 
+## 3.2 First and Latest Ten Countries
+
+```{r, include=FALSE}
+opts_chunk$set(tidy.opts=list(width.cutoff=83),tidy=TRUE)
+```
+
+The following are the first 10 countries to be affected by coronavirus in order.
+
+```{r, message=FALSE, warning=FALSE}
+## order data by date
+n_z_c_d_order_date <- non_zero_confirmed_data[order(non_zero_confirmed_data$date),]
+
+## print first 10 affected countries
+head(unique(n_z_c_d_order_date[,1:1]), 10)
+```
+ 
+ 
+Below are the latest 10 countries to be affected by the virus.  
+
+```{r, message=FALSE, warning=FALSE}
+## print last 10 affected countries
+head(rev(unique(n_z_c_d_order_date[,1:1])), 10)
+```
+ 
+ 
+## 3.3 Total Cases
+```{r, include=FALSE}
+opts_chunk$set(tidy.opts=list(width.cutoff=40),tidy=TRUE)
+```
+
+The virus which originated in China has spread across the globe and has affected almost every country. Let us now see the total number of countries affected by the virus.  
+ 
+```{r, message=FALSE}
+length(unique(n_z_c_d_order_date[,1:1]))
+```
+We see 191 countries are affected by the virus!  
+ 
+ 
+*Table 6* shows the total confirmed cases, deaths and recoveries in the world as on the date of report generation.  
+```{r, message=FALSE}
+## get the data for last available date
+total_cases_world <- data %>% filter(data$date==max(date))
+
+## sum the cases in all countries
+total_cases_world <- total_cases_world %>% summarise(confirmed=sum(total_cases_world$confirmed), deaths=sum(total_cases_world$deaths), recovered=sum(total_cases_world$recovered))
+
+## print
+total_cases_world %>% kable(format='pipe', align='c', row.names=FALSE, caption='Total Cases in the World')
+```
+
+
+## 3.4 Latest Trend
+```{r, include=FALSE}
+opts_chunk$set(tidy.opts=list(width.cutoff=52),tidy=TRUE)
+```
+
+Let us now see total new cases, new deaths and new recoveries in the world on the date of report generation.  
+
+```{r, message=FALSE}
+## get data for previous day and sum all cases
+total_cases_world_previous_day <- data %>% filter(data$date==max(date-1))
+total_cases_world_previous_day <- total_cases_world_previous_day %>% summarise(confirmed=sum(total_cases_world_previous_day$confirmed), deaths=sum(total_cases_world_previous_day$deaths), recovered=sum(total_cases_world_previous_day$recovered))
+
+## calculate new cases and print
+total_new_cases_world_today = total_cases_world - total_cases_world_previous_day
+total_new_cases_world_today %>% kable(format='pipe', align='c', row.names=FALSE, caption='Latest Trend')
+```
+
+
+## 3.5 Recovery Rate and Death Rate
+```{r, include=FALSE}
+opts_chunk$set(tidy.opts=list(width.cutoff=83),tidy=TRUE)
+```
+
+Recovery rate and death rate among the closed cases gives us some idea about the deadliness of the virus.
+```{r}
+## recovery rate in the world among closed cases
+(total_cases_world$recovered/(total_cases_world$recovered+total_cases_world$deaths))*100
+
+## death rate in the world among closed cases
+(total_cases_world$deaths/(total_cases_world$recovered+total_cases_world$deaths))*100
+```
+Coronavirus pandemic has about more than 96% recovery rate, which is very positive.  
+ 
+Total active cases in the world can be calculated by subtracting total deaths and recovered cases from total confirmed cases.  
+```{r}
+## active cases in the world
+total_cases_world$confirmed-total_cases_world$deaths-total_cases_world$recovered
+```
+We still have more than 19.5M active cases in the world and are far away from the day where cases will be 0.  
+ 
+\pagebreak  
+ 
+# 4 Worldwide
+
+We had a quick peek at the data until now. In this section, we analyze the data of various countries worldwide and also visualize the data and the patterns.  
+ 
+ 
+## 4.1 Total Cases
+ 
+Let us see how the total cases has increased worldwide. Flatter the curve of confirmed cases, better for us and the world.
+```{r, include=FALSE}
+opts_chunk$set(tidy.opts=list(width.cutoff=55),tidy=TRUE)
+```
+
+```{r, message=FALSE, warning=FALSE}
+## data of world for each day
+data_world <- data %>% group_by(date) %>% summarise(confirmed=sum(confirmed, na.rm=T), deaths=sum(deaths, na.rm=T), recovered=sum(recovered, na.rm=T))
+
+## gather data to long format for graph
+data_world_for_graph <- data_world %>% gather(key=type, value=count, -c(date))
+
+## create graph
+world_graph <- data_world_for_graph %>% ggplot(aes(x=date, y=count, color=type)) + geom_line() + labs(title="Total Cases Worldwide") + scale_color_manual(values = c('blue', 'red', 'green')) + theme(legend.position = 'bottom', legend.title=element_blank(), legend.text=element_text(size=6), plot.title = element_text(size=8))
+world_graph_log <- data_world_for_graph %>% ggplot(aes(x=date, y=count, color=type)) + geom_line() + scale_y_log10() + labs(title="Total Cases Worldwide (log scale)") + scale_color_manual(values = c('blue', 'red', 'green')) + theme(legend.position = 'bottom', legend.title=element_blank(), legend.text=element_text(size=6), plot.title = element_text(size=8))
+
+## display graph  
+grid.arrange(world_graph, world_graph_log, ncol=2, widths = c(6, 6), top="Worldwide Total Cases")
+```
+ 
+Notice that the confirmed cases are constantly increasing and we are yet far away from flattening the curve.  
+ 
+ 
+## 4.2 Daily Trends
+ 
+```{r, include=FALSE}
+opts_chunk$set(tidy.opts=list(width.cutoff=50),tidy=TRUE)
+```
+ 
+This section talks about the daily numbers. Lesser the values for confirmed and deaths, better. Since the dataset we had is the cumulative dataset, we will first calculate the daily numbers and then visualize them.
+```{r, message=FALSE, warning=FALSE}
+## daily new numbers
+data_world <- data_world %>% mutate(confirmed.new = ifelse(date == min(data_world$date), 0, confirmed - lag(confirmed, n=1)), deaths.new = ifelse(date == min(data_world$date), 0, deaths - lag(deaths, n=1)), recovered.new = ifelse(date == min(data_world$date), 0, recovered - lag(recovered, n=1)))
+data_world <- data_world %>% mutate(confirmed.new = ifelse(confirmed.new < 0, 0, confirmed.new), deaths.new = ifelse(deaths.new < 0, 0, deaths.new), recovered.new = ifelse(recovered.new < 0, 0, recovered.new))
+
+## gather data to long format for graph
+data_world_daily_for_graph <- data_world %>% select(c(date, confirmed.new, deaths.new, recovered.new)) %>% gather(key=type, value=count, -c(date))
+
+## create graph
+world_graph_daily <- data_world_daily_for_graph %>% ggplot(aes(x=date, y=count, color=type)) + geom_line() + labs(title="Everyday New Cases Worldwide") + scale_color_manual(values = c('blue', 'red', 'green')) + theme(legend.position = 'bottom', legend.title=element_blank(), legend.text=element_text(size=6), plot.title = element_text(size=8))
+world_graph_daily_log <- data_world_daily_for_graph %>% ggplot(aes(x=date, y=count, color=type)) + geom_line() + labs(title="Everyday New Cases Worldwide (log scale)") + scale_y_log10() + scale_color_manual(values = c('blue', 'red', 'green')) + theme(legend.position = 'bottom', legend.title=element_blank(), legend.text=element_text(size=6), plot.title = element_text(size=8))
+
+## display graph
+grid.arrange(world_graph_daily, world_graph_daily_log, ncol=2, widths = c(6, 6), top="Worldwide Daily Trend")
+
+```
+ 
+ 
+## 4.3 Active vs New
+ 
+```{r, include=FALSE}
+opts_chunk$set(tidy.opts=list(width.cutoff=55),tidy=TRUE)
+```
+ 
+This section gives us a brief about the active cases and the daily new cases.  
+ 
+```{r, message=FALSE, warning=FALSE}
+## calculate active cases
+data_world <- data_world %>%  mutate(active = confirmed - deaths - recovered)
+
+## convert dataset to required format
+data_world_ative_new <- data_world %>% select(c(date, confirmed.new, active)) %>% gather(key=type, value=count, -c(date))
+
+## create graph
+data_world_ative_new_graph <- data_world_ative_new %>% ggplot(aes(x=date, y=count)) + geom_area(aes(fill=type)) + scale_y_log10() + labs(title="Active vs New Cases Worldwide") + scale_fill_manual(values = c('orange', 'red')) + theme(legend.position = 'bottom')
+
+## display graph
+data_world_ative_new_graph
+```
+  Active cases generally depend on new cases and we see that through the pattern in above graph.  
+ 
+ 
+## 4.4 Recovery vs Death Rate
+
+```{r, include=FALSE}
+opts_chunk$set(tidy.opts=list(width.cutoff=50),tidy=TRUE)
+```
+
+```{r, message=FALSE, warning=FALSE}
+## calculate recovery and death rate
+data_world <- data_world %>% mutate(recovery.rate = (recovered/(recovered+deaths))*100)
+data_world <- data_world %>% mutate(death.rate = (deaths/(recovered+deaths))*100)
+
+## convert dataset to required format
+world_deaths_recovery <- data_world %>% select(c(date, recovery.rate, death.rate)) %>% gather(key=type, value=count, -c(date))
+
+## create graph
+world_deaths_recovery_graph <- world_deaths_recovery %>% ggplot(aes(x=date, y=count, color=type)) + geom_point() + labs(title="Recovery vs Death Rate Worldwide") + theme(legend.position = 'bottom')
+
+## display graph
+world_deaths_recovery_graph
+```
+  Apart from the initial days where death rate and recovery rate were both around 50%, we see that both recovery and death rates have stabilized now with recovery rate hovering close to 96.5% and death rate about 3.5%. Note that these rates are calculated with respect to closed cases.  
+ 
+ 
+## 4.5 Cases Worldwide
+ 
+```{r}
+## prepare the dataset
+raw_data_confirmed_map <- raw.data.confirmed
+raw_data_confirmed_map <- raw_data_confirmed_map %>% mutate(confirmed=raw_data_confirmed_map[,ncol(raw_data_confirmed_map)])
+raw_data_confirmed_map <- raw_data_confirmed_map %>% select(c(Country.Region, Lat, Long, confirmed))
+
+## create and display map
+leaflet(width=1000, height=700) %>% addTiles() %>% addCircleMarkers(raw_data_confirmed_map$Long, raw_data_confirmed_map$Lat, radius=1.5*log2(raw_data_confirmed_map$confirmed), stroke = F)
+```
+The coronavirus has spread to all corners of the world and its evident from the map above.  
+ 
+ 
+## 4.6 Countries with Zero Deaths
+ 
+  Coronavirus has low death rate as we already saw. It could be possible that few small countries might have recorded 0 deaths for coronavirus. Lets check if there are any such countries and if yes, some of their stats.
+```{r, message=FALSE, warning=FALSE}
+## filter countries with zero deaths
+zero_deaths_countries <- data %>% filter(date==max(date),deaths==0) %>% mutate(active = confirmed - deaths - recovered) %>% select(-c(date))
+
+## print
+zero_deaths_countries %>% kable(format='pipe', align='c', row.names =c(1:nrow(zero_deaths_countries)) , caption='Countries with Zero Deaths')
+```
+  There are 15 countries with zero deaths as of today as shown in *Table 8*.
+ 
+ 
+## 4.7 Countries with Less Active Cases
+ 
+  Lets first see if there are countries with zero active cases.
+```{r, include=FALSE}
+opts_chunk$set(tidy.opts=list(width.cutoff=50),tidy=TRUE)
+```
+
+```{r, message=FALSE, warning=FALSE}
+## filter countries with zero active cases
+zero_active_countries <- data %>% filter(date==max(date)) %>% mutate(active = confirmed - deaths - recovered) %>% filter(active==0) %>% select(-c(date))
+
+## print
+zero_active_countries %>% kable(row.names =c(1:nrow(zero_active_countries)), format='pipe', caption='Countries with Zero Active Cases', align='c')
+```
+  There are four countries! *Next destination, may be?*  
+ 
+ 
+  Lets now check for the countries with less than 100 active cases.
+```{r, message=FALSE, warning=FALSE}
+## filter countries with <= 100 active cases
+less_active_countries <- data %>% filter(date==max(date)) %>% mutate(active = confirmed - deaths - recovered) %>% filter(active<=100) %>% select(-c(date))
+
+## print
+less_active_countries %>% kable(row.names =c(1:nrow(less_active_countries)), format='pipe', caption='Countries with Less than 100 Active Cases', align='c')
+```
+  There are whopping 40 countries with active cases less than 100! The entry of Singapore in this table is commendable as it has active cases less than 100 with confirmed cases above 58k.  
+ 
+\pagebreak
+
+# 5 India
+ 
+We all know that on this day, India is one of the worst affected country by coronavirus. Let us analyze data about India in this section.
+ 
+## 5.1 First Case
+ 
+```{r, include=FALSE}
+opts_chunk$set(tidy.opts=list(width.cutoff=60),tidy=TRUE)
+```
+
+```{r, warning=FALSE, message=FALSE}
+## get the date of first reported case
+first_case <- head(data %>%  filter(country=='India', confirmed!=0) %>% select(c(date, confirmed)), 1)
+
+##print
+first_case %>% kable(format='pipe', align='c', row.names=FALSE , caption='First Case in India')
+```
+ 
+  First case in India was confirmed on Jan 30, 2020 and only one case was reported on this day.  
+ 
+ 
+## 5.2 Cumulative and Daily Trends
+ 
+  This section gives trends of cumulative and daily cases in India.
+```{r, include=FALSE}
+opts_chunk$set(tidy.opts=list(width.cutoff=50),tidy=TRUE)
+```
+ 
+```{r, warning=FALSE, message=FALSE}
+## filter data of India
+data_india <- data %>% filter(country=='India') %>% group_by(date) %>% summarise(confirmed=sum(confirmed, na.rm=T), deaths=sum(deaths, na.rm=T), recovered=sum(recovered, na.rm=T))
+
+## gather data to long format for graph
+data_india_for_graph <- data_india %>% gather(key=type, value=count, -c(date))
+
+## daily new numbers
+data_india <- data_india %>% mutate(confirmed.new = ifelse(date == min(data_india$date), 0, confirmed - lag(confirmed, n=1)), deaths.new = ifelse(date == min(data_india$date), 0, deaths - lag(deaths, n=1)), recovered.new = ifelse(date == min(data_india$date), 0, recovered - lag(recovered, n=1)))
+data_india <- data_india %>% mutate(confirmed.new = ifelse(confirmed.new < 0, 0, confirmed.new), deaths.new = ifelse(deaths.new < 0, 0, deaths.new), recovered.new = ifelse(recovered.new < 0, 0, recovered.new))
+
+## gather data to long format for graph
+data_india_daily_for_graph <- data_india %>% select(c(date, confirmed.new, deaths.new, recovered.new)) %>% gather(key=type, value=count, -c(date))
+
+## create graph
+india_graph <- data_india_for_graph %>% ggplot(aes(x=date, y=count, color=type)) + geom_line() + labs(title="Cumulative Trend - India") + scale_color_manual(values = c('blue', 'red', 'green')) + theme(legend.position = 'bottom', legend.title = element_blank(),
+legend.text = element_text(size = 6), plot.title = element_text(size = 8))
+india_graph_daily <- data_india_daily_for_graph %>% ggplot(aes(x=date, y=count, color=type)) + geom_line() + labs(title="Daily Trend - India") + scale_color_manual(values = c('blue', 'red', 'green')) + theme(legend.position = 'bottom', legend.title = element_blank(),
+legend.text = element_text(size = 6), plot.title = element_text(size = 8))
+
+## display graph
+grid.arrange(india_graph, india_graph_daily, ncol=2, widths = c(5, 5), top="India Trend")
+```
+From the plot above, we see that there is a slow dip in daily new cases from approximately last one month. Another interesting fact is that daily recoveries have increased over daily new cases in the same time period.
+ 
+## 5.3 New vs Active
+
+```{r, message=FALSE}
+## calculate active cases
+data_india <- data_india %>%  mutate(active = confirmed - deaths - recovered)
+
+## arrange data for plot
+data_india_ative_new <- data_india %>% select(c(date, confirmed.new, active)) %>% gather(key=type, value=count, -c(date))
+
+## create graph
+data_india_ative_new_graph <- data_india_ative_new %>% ggplot(aes(x=date, y=count, color=type)) + geom_point() + geom_smooth() + labs(title="New vs Active Cases - India") + scale_color_manual(values = c('orange', 'red')) + theme(legend.position = 'bottom')
+
+## display graph
+data_india_ative_new_graph
+```
+The active cases have started to dip down from past month along with the new cases as seen in the graph.
+ 
+ 
+## 5.4 Recovery vs Death Rate
+
+```{r, include=FALSE}
+opts_chunk$set(tidy.opts=list(width.cutoff=28),tidy=TRUE)
+```
+ 
+Recovery rate is significant as it implies the deadliness of the virus. Higher the recovery rate, lower will be the death rate and is better for the country. Both the recovery and death rates are calculated with respect to closed cases. Active cases are not taken into consideration for calculation of recovery and death rates.  
+ 
+```{r, message=FALSE, warning=FALSE}
+## calculate recovery and death rate
+data_india <- data_india %>% mutate(recovery.rate = (data_india$recovered/(data_india$recovered+data_india$deaths))*100)
+data_india <- data_india %>% mutate(death.rate = (data_india$deaths/(data_india$recovered+data_india$deaths))*100)
+
+## gather data to plot
+india_deaths_recovery <- data_india %>% select(c(date, recovery.rate, death.rate)) %>% gather(key=type, value=count, -c(date))
+
+## recovery and death rate
+india_deaths_recovery %>% filter(date==max(date)) %>% select(-c(date)) %>% kable(format = "pipe", align = "c", row.names = FALSE,
+caption = "Recovery and Death Rates in India")
+
+## create graph
+india_deaths_recovery_graph <- india_deaths_recovery %>% ggplot(aes(x=date, y=count, color=type)) + geom_line() + labs(title="Recovery vs Death Rate India") + theme(legend.position = 'bottom')
+
+## display graph
+india_deaths_recovery_graph
+```
+Like worldwide, India as well we see that apart from initial variations, recovery and death rates are consistently hovering around 98% and 2% respectively.
+ 
+## 5.5 Initial Trend
+
+```{r, include=FALSE}
+opts_chunk$set(tidy.opts=list(width.cutoff=50),tidy=TRUE)
+```
+
+This section shows the initial daily trend of the cases in India. First 60 days of data is used to analyze the initial trend in India since corona cases started increasing only in mid of March.
+```{r, message=FALSE, warning=FALSE}
+## first 60 days of data
+initial_data_india <- head(data_india, 60) %>% select(c(date, confirmed.new, deaths.new, recovered.new)) %>% gather(key=type, value=count, -c(date))
+
+## create plot
+initial_graph_india <- initial_data_india %>% ggplot(aes(x=date, y=count, color=type)) + geom_line() + labs(title="Initial Trend - India") + scale_color_manual(values = c('blue', 'red', 'green')) + theme(legend.position = 'bottom')
+
+## display graph
+initial_graph_india
+```
+  The graph tells us that there were rarely any cases until March 01, 2020 in India. The cases slowly started to increase from March in India.  
+ 
+ 
+## 5.6 Latest Trend
+ 
+For latest daily trend, we analyze the last 15 days of data for India.
+```{r, message=FALSE, warning=FALSE}
+## last 15 days of data
+latest_data_india <- tail(data_india, 15) %>% select(c(date, confirmed.new, deaths.new, recovered.new)) %>% gather(key=type, value=count, -c(date))
+
+## create graph
+latest_graph_india <- latest_data_india %>% ggplot(aes(x=date, y=count, color=type)) + geom_line() + scale_y_log10() + labs(title="Latest Trend - India") + scale_color_manual(values = c('blue', 'red', 'green')) + theme(legend.position = 'bottom')
+
+## display graph
+latest_graph_india
+```
+  We see that for last 15days in India, daily deaths are below 1000 and recoveries are higher than new cases in general.  
+ 
+\pagebreak
+ 
+# 6 Top Ten Countries
+
+Here we see top 10 countries with various parameters and compare them.  
+ 
+## 6.1 Top Ten Countries - Total Confirmed Cases
+
+```{r, warning=FALSE, message=FALSE}
+## current cases by country
+data_by_country <- data %>% filter(data$date==max(date))
+
+## top 10 countries with confirmed cases
+data_top_ten <- head(data_by_country[rev(order(data_by_country$confirmed)),], 10)
+
+## display data
+data_top_ten %>% select(c(country, confirmed, deaths, recovered)) %>% kable(format='pipe', align='c', row.names=FALSE, caption='Top 10 Countries')
+```
+
+*Table 13* shows the top 10 countries in the world with most confirmed corona cases. US has already breached the 10M mark and India is at second with 8.7M.  
+ 
+  *We can also notice that the data for United Kingdom looks invalid. On verifying this in the dataset used and online, it can be confirmed that the data for recovered cases of UK is corrupt.*  
+ 
+  Lets visualize various parameters of top 10 countries with highest cases.  
+```{r, warning=FALSE, message=FALSE, fig.height=6.3}
+## prepare date by countries
+data_by_country <- data_by_country %>% mutate(active = confirmed - deaths - recovered)
+data_by_country <- data_by_country %>% mutate(death.rate = ifelse(recovered > 0, deaths/(recovered + deaths) * 100, 0))
+data_by_country <- data_by_country %>% mutate(recovered.rate = ifelse(recovered > 0, recovered/(recovered + deaths) * 100, NA))
+
+## select top 10 countries with confirmed cases
+data_by_country_top_ten <- head(data_by_country[rev(order(data_by_country$confirmed)),], 10, row.names=FALSE)
+
+## gather data to plot
+data_top_ten_for_graph <- data_by_country_top_ten %>% gather(key=type, value=count, -c(country, date)) %>% select(c(country, type, count))
+
+## create plot
+top_ten_graph <- data_top_ten_for_graph %>% ggplot(aes(x=country, y=count, fill=country, group=country)) + geom_bar(stat='identity') + theme(legend.position = 'none') + labs(title = "Various Metrics of Top 10 Highest Confirmed Cases Countries") + facet_wrap(~type, ncol=1, scales='free_y')
+
+## display plot
+top_ten_graph
+```
+The bar charts above show the number of active, confirmed, death, recovered cases and death, recovered rates for top 10 countries with highest confirmed cases.
+
+```{r, fig.width=5, fig.height=3}
+## confirmed vs deaths plot
+data_by_country_top_ten %>% ggplot(aes(x=confirmed, y=deaths, group=country)) + geom_point(aes(color=country)) + labs(title = "Confirmed vs Deaths - Top 10 Confirmed Cases Countries") + theme(legend.title = element_blank(), plot.title = element_text(size=9))
+
+## recovered vs deaths plot
+data_by_country_top_ten %>% ggplot(aes(x=recovered, y=deaths, group=country)) + geom_point(aes(color=country)) + labs(title = "Recovered vs Deaths - Top 10 Confirmed Cases Countries") + theme(legend.title = element_blank(), plot.title = element_text(size=9))
+```
+ 
+```{r, include=FALSE}
+opts_chunk$set(tidy.opts=list(width.cutoff=65),tidy=TRUE)
+```
+
+```{r, fig.height=5}
+## top 10 countries
+top_ten_countries <- data_top_ten %>% pull(country) %>% as.character()
+
+## data of top 10 countries
+top_ten_data <- data %>% filter(country %in% top_ten_countries)
+
+## alter dataset for plot
+top_ten_data_without_confirmed_field <- top_ten_data %>% mutate(active = confirmed - deaths - recovered) %>% select(-c(confirmed))
+top_ten_data_for_graph <- top_ten_data_without_confirmed_field %>% gather(key=type, value=count, -c(country, date))
+
+## plot
+top_ten_data_for_graph %>% ggplot(aes(x=date, y=count, fill=type)) + labs(title="Cases in Top 10 Countries with Highest Confirmed Cases") + geom_area(alpha=0.5) + scale_fill_manual(values=c('orange', 'red', 'purple')) + facet_wrap(~country, ncol=3, scales = 'free_y') + theme(legend.position = 'bottom', legend.title = element_blank(), axis.title = element_blank(), plot.title = element_text(size = 10))
+```
+
+\pagebreak
+
+```{r, include=FALSE}
+opts_chunk$set(tidy.opts=list(width.cutoff=45),tidy=TRUE)
+```
+
+```{r, fig.width=5, fig.height=3}
+## confirmed vs deaths plot
+top_ten_data %>% ggplot(aes(x=confirmed, y=deaths, group=country, color=country)) + geom_line() + labs(title = "Confirmed vs Deaths - Top 10 Countries with Highest Confirmed Cases") + theme(legend.title = element_blank(), plot.title = element_text(size=9))
+```
+
+## 6.2 Top Ten Countries - Death Rate
+
+```{r, include=FALSE}
+opts_chunk$set(tidy.opts=list(width.cutoff=65),tidy=TRUE)
+```
+
+```{r}
+## highest top 10
+hdr_countries <- data_by_country[rev(order(data_by_country$death.rate)),]
+highest_death_rate_countries <- head(hdr_countries, 10, row.names=FALSE) %>% select(-c(date))
+highest_death_rate_countries %>% kable(format = "pipe", align = "c", row.names = FALSE,
+caption = "Top 10 Countries with Highest Death Rates")
+```
+Recovered cases of UK, Netherlands are invalid. With the valid data, we see that Yemen has the highest death rate. But in general, European countries have the highest death rate.  
+ 
+```{r}
+## lowest top 10
+ldr_countries <- data_by_country %>% filter(death.rate!=0)
+ldr_countries <- ldr_countries[order(ldr_countries$death.rate),]
+lowest_death_rate_countries <- head(ldr_countries, 10, row.names=FALSE) %>% select(-c(date))
+lowest_death_rate_countries %>% kable(format = "pipe", align = "c", row.names = FALSE,
+caption = "Top 10 Countries with Lowest Death Rates")
+```
+ 
+```{r, include=FALSE}
+opts_chunk$set(tidy.opts=list(width.cutoff=50),tidy=TRUE)
+```
+
+```{r, fig.width=5, fig.height=3}
+## plot confirmed vs death for lowest top 10
+lowest_death_rate_countries %>% ggplot(aes(x = confirmed, y = deaths, group = country)) + geom_point(aes(color = country)) + labs(title = "Confirmed vs Deaths - 10 Lowest Death Rate Countries") + theme(legend.title = element_blank(), plot.title = element_text(size = 9))
+```
+ 
+  The countries in *Table 15* have maintained very low death rates. Especially countries like Singapore, Qatar and UAE are quite successful considering Qatar and UAE had to deal with more than 100k cases and Singapore with more than 50k cases.  
+ 
+ 
+## 6.3 Top 10 Countries vs Rest of the World
+ 
+```{r, include=FALSE}
+opts_chunk$set(tidy.opts=list(width.cutoff=65),tidy=TRUE)
+```
+
+  In this section we will have a look at how rest of the world stands with respect to top 10 countries in terms of total confirmed cases.
+```{r}
+## total confirmed cases in top 10 countries
+sum(data_top_ten$confirmed)
+```
+
+```{r}
+## data of rest of the countries
+data_rest_countries <- data_by_country %>% filter(!(country %in% top_ten_countries))
+
+## total confirmed cases in rest of the world
+sum(data_rest_countries$confirmed)
+```
+  We see that top 10 countries contain ~66.5% of the total confirmed cases in the world where as rest of the world contains ~33.5% of the total cases. In other words, top 10 countries contain twice the confirmed cases as rest of the world.
+
+
+\pagebreak
+
+# 7 China
+
+China, the country where coronavirus broke out for the first time, has yet never appeared in any of the analysis carried out in this report. This could imply that the virus is contained in the country. Let us have a quick look at the current situation of China with respect to corona virus and check whether our implications stand true.
+
+```{r}
+## total cases in China
+data_by_country %>% filter(country=='China') %>% select(-c(date, country)) %>% kable(format = "pipe", caption = "Current Situation - China", row.names = FALSE, align = "c")
+```
+There are still 559 active cases in China with ~5% death rate overall. Lets see the status for last 15 days.
+```{r}
+## filter data of China
+china_data <- data %>% filter(country=='China') %>% mutate(active=confirmed-deaths-recovered) %>% select(-c(country))
+
+## last 15 days data of China
+china_data_recent <- tail(china_data, 15)
+china_data_recent %>% kable(format = "pipe", align = "c", row.names = FALSE, caption = "Last 15 Days - China")
+```
+The virus is not completely contained in China but the increase in new cases are only in tens for the past 15 days. Since the past 15 days of data for China is not giving us the clear picture, let us have a look at the plot for the cases since breakout and try to analyze the situation.  
+ 
+```{r, fig.width=5, fig.height=3}
+## gather data of China to plot graph
+china_data_for_graph <- china_data %>% gather(key = type, value = count, -c(date))
+
+## create plot
+china_graph <- china_data_for_graph %>% ggplot(aes(x = date, y = count, color = type)) + geom_line() + labs(title = "Total Cases - China") + scale_color_manual(values = c("blue", "black", "red", "green")) + theme(legend.position = "bottom")
+
+## display plot
+china_graph
+```
+
+From the plot above, we notice that the cases in China has stabilized and the increase is negligible. The active cases are very low and China has successfully maintained this state from April.
+
+\pagebreak
+
+# 8 Conclusions
+ 
+  Almost every country on the globe is impacted by the virus and as on the day of report generation, there are 191 countries with confirmed cases. Among these 191 countries, only 2 countries do not have active cases as of now. The death rate in the world because of the virus has almost stabilized between 3% to 4% and it could reduce going forward with time as there are improvements in medical care. China, where the corona virus broke out for the first time looks to have contained the virus. USA is still facing the heat with daily cases still over 100k. European countries are amidst the so called second wave but the death rates are very low compared to their first wave. The cases have started to decrease in India with close to 40k new cases daily, but it is still far away from being contained. The world is looking forward for the first vaccine to eradicate the corona virus, fingers crossed!  
+ 
+ 
+  Though the data available is mostly accurate, there are some issues with the data. There were noticeable discrepancies especially in the recovered data either because of inaccurate data or missing entries. Few countries which have inaccurate data include United Kingdom, Netherlands, Sweden, Serbia. But it is to be noted that few other countries like Marshall Islands, Vanuatu actually do have 0 recovered cases as they are recently affected by the virus and the patients are yet to be recovered.  
+ 
+  Since the recovered data of many countries are invalid, few of the analysis done in this report could have gone for a toss. For instance, in section 3.5, recovery rate could be still better and death rate could decrease if we had valid recovered data. Total active cases could also decrease drastically from 17.2M in the same section with valid data.
+ 
+  The data of all the countries with confirmed, active, deaths and recovered cases, recovery and death rates are listed below for the reference.
+ 
+```{r}
+## data of all the countries
+data_by_country %>% select(-c(date)) %>% kable(format = "latex", align = "c", booktabs=T, longtable=T, row.names = FALSE,
+caption = "Countrywise Data") %>% kable_styling(font_size=7)
+```
